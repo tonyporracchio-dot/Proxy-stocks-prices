@@ -2,43 +2,40 @@ import express from "express";
 import cors from "cors";
 
 const app = express();
-app.use(cors()); // permette le chiamate da qualsiasi sito (incluso il tuo portafoglio)
+app.use(cors());
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Esempio: /price?symbol=AAPL  oppure  /price?symbol=SWDA:LSE
+// Esempio: /price?symbol=IWDA.MI
 app.get("/price", async (req, res) => {
-  const raw = req.query.symbol;
-  if (!raw) {
+  const symbol = req.query.symbol;
+  if (!symbol) {
     return res.status(400).json({ error: "Parametro 'symbol' mancante" });
   }
 
-  const apiKey = process.env.TWELVEDATA_API_KEY;
-  if (!apiKey) {
-    return res.status(500).json({ error: "TWELVEDATA_API_KEY non configurata sul server" });
-  }
-
-  // Formato accettato: "SIMBOLO" oppure "SIMBOLO:BORSA" (es. SWDA:LSE)
-  const [symbol, exchange] = raw.split(":");
-
-  const params = new URLSearchParams({ symbol, apikey: apiKey });
-  if (exchange) params.set("exchange", exchange);
-
   try {
-    const url = `https://api.twelvedata.com/price?${params.toString()}`;
-    const response = await fetch(url);
-    const data = await response.json();
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+      }
+    });
 
-    if (data.status === "error" || !data.price) {
-      return res.status(404).json({
-        error: data.message || "Simbolo non trovato",
-        symbol: raw
-      });
+    if (!response.ok) {
+      return res.status(502).json({ error: `Yahoo ha risposto con status ${response.status}`, symbol });
     }
 
-    res.json({ symbol: raw, price: Number(data.price) });
+    const data = await response.json();
+    const price = data?.chart?.result?.[0]?.meta?.regularMarketPrice;
+
+    if (!price) {
+      return res.status(404).json({ error: "Simbolo non trovato o dato non disponibile", symbol });
+    }
+
+    res.json({ symbol, price: Number(price) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
