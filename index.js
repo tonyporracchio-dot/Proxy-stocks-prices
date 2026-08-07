@@ -17,7 +17,12 @@ app.get("/price", async (req, res) => {
 
   try {
     const stooqUrl = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcv&h&e=csv`;
-    const response = await fetch(stooqUrl);
+    const response = await fetch(stooqUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "Accept": "text/csv,text/plain,*/*"
+      }
+    });
 
     if (!response.ok) {
       return res.status(502).json({ error: `Stooq ha risposto con status ${response.status}` });
