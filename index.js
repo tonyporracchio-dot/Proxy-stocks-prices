@@ -8,45 +8,37 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// Esempio: /price?symbol=swda.uk
+// Esempio: /price?symbol=AAPL  oppure  /price?symbol=SWDA:LSE
 app.get("/price", async (req, res) => {
-  const symbol = req.query.symbol;
-  if (!symbol) {
+  const raw = req.query.symbol;
+  if (!raw) {
     return res.status(400).json({ error: "Parametro 'symbol' mancante" });
   }
 
+  const apiKey = process.env.TWELVEDATA_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: "TWELVEDATA_API_KEY non configurata sul server" });
+  }
+
+  // Formato accettato: "SIMBOLO" oppure "SIMBOLO:BORSA" (es. SWDA:LSE)
+  const [symbol, exchange] = raw.split(":");
+
+  const params = new URLSearchParams({ symbol, apikey: apiKey });
+  if (exchange) params.set("exchange", exchange);
+
   try {
-    const stooqUrl = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcv&h&e=csv`;
-    const response = await fetch(stooqUrl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "text/csv,text/plain,*/*"
-      }
-    });
+    const url = `https://api.twelvedata.com/price?${params.toString()}`;
+    const response = await fetch(url);
+    const data = await response.json();
 
-    if (!response.ok) {
-      return res.status(502).json({ error: `Stooq ha risposto con status ${response.status}` });
+    if (data.status === "error" || !data.price) {
+      return res.status(404).json({
+        error: data.message || "Simbolo non trovato",
+        symbol: raw
+      });
     }
 
-    const text = await response.text();
-    const lines = text.trim().split("\n");
-
-    if (lines.length < 2) {
-      return res.status(502).json({ error: "Risposta vuota da Stooq" });
-    }
-
-    const cols = lines[1].split(",");
-    const closeRaw = (cols[6] || "").trim();
-
-    if (!closeRaw || closeRaw.toUpperCase() === "N/D" || isNaN(Number(closeRaw))) {
-      return res.status(404).json({ error: "Simbolo non trovato su Stooq", symbol });
-    }
-
-    res.json({
-      symbol,
-      price: Number(closeRaw),
-      date: cols[1] || null
-    });
+    res.json({ symbol: raw, price: Number(data.price) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
