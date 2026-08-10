@@ -7,57 +7,86 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-app.get('/price', async (req, res) => {
-  const symbol = req.query.symbol;
+// Cache in memoria (2 minuti) per evitare chiamate ripetute
+const cache = {};
+const CACHE_DURATION_MS = 2 * 60 * 1000;
 
-  if (!symbol) {
-    return res.status(400).json({ error: 'Parametro "symbol" mancante (es. /price?symbol=MWRD.MI)' });
+async function getSingleStockData(symbol) {
+  const sym = symbol.trim().toUpperCase();
+  const now = Date.now();
+
+  if (cache[sym] && (now - cache[sym].timestamp < CACHE_DURATION_MS)) {
+    return cache[sym].data;
   }
 
+  // Endpoint Chart v8: stabile, veloce e privo di blocchi crumb/cookie
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=2d`;
+  
+  const response = await axios.get(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    },
+    timeout: 8000
+  });
+
+  const meta = response.data?.chart?.result?.[0]?.meta;
+  if (!meta) throw new Error(`Dati non trovati per ${sym}`);
+
+  const currentPrice = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
+  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? currentPrice;
+  
+  let changePercent = 0;
+  if (prevClose > 0) {
+    changePercent = ((currentPrice - prevClose) / prevClose) * 100;
+  }
+
+  const itemData = {
+    symbol: sym,
+    price: currentPrice,
+    changePercent: parseFloat(changePercent.toFixed(2)),
+    currency: meta.currency || 'EUR'
+  };
+
+  cache[sym] = { data: itemData, timestamp: now };
+  return itemData;
+}
+
+app.get('/price', async (req, res) => {
+  const rawSymbols = req.query.symbols || req.query.symbol;
+
+  if (!rawSymbols) {
+    return res.status(400).json({ error: 'Parametro symbol o symbols mancante.' });
+  }
+
+  const symbolList = Array.from(
+    new Set(rawSymbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean))
+  );
+
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol.trim())}?interval=1d&range=1d`;
-    
-    const response = await axios.get(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-      },
-      timeout: 8000
-    });
+    const promises = symbolList.map(sym => 
+      getSingleStockData(sym).catch(err => {
+        console.error(`Errore per ${sym}:`, err.message);
+        return null;
+      })
+    );
 
-    const result = response.data?.chart?.result?.[0];
-    if (!result) {
-      return res.status(404).json({ error: `Nessun dato trovato per il simbolo "${symbol}"` });
-    }
+    const resultsArray = await Promise.all(promises);
+    const validResults = resultsArray.filter(Boolean);
 
-    const meta = result.meta;
-    const price = meta.regularMarketPrice;
-    const previousClose = meta.chartPreviousClose || meta.previousClose;
-    
-    // Calcola la variazione percentuale giornaliera
-    let changePercent = 0;
-    if (price && previousClose) {
-      changePercent = ((price - previousClose) / previousClose) * 100;
+    if (req.query.symbol && symbolList.length === 1) {
+      if (validResults.length === 0) {
+        return res.status(404).json({ error: 'Simbolo non trovato.' });
+      }
+      return res.json(validResults[0]);
     }
 
     return res.json({
-      symbol: meta.symbol || symbol,
-      price: price || 0,
-      currency: meta.currency || 'EUR',
-      changePercent: changePercent,
-      longName: meta.longName || meta.shortName || symbol
+      count: validResults.length,
+      results: validResults
     });
-
   } catch (error) {
-    console.error(`Errore per il simbolo ${symbol}:`, error.message);
-    
-    const status = error.response?.status || 500;
-    return res.status(status).json({
-      error: 'Errore durante la chiamata a Yahoo Finance',
-      details: error.response?.status === 429 ? 'Rate limit (429) da Yahoo. Attendi qualche secondo.' : error.message
-    });
+    return res.status(500).json({ error: 'Errore durante il recupero dei dati.' });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Proxy attivo sulla porta ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Proxy attivo sulla porta ${PORT}`));
