@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// Cache in memoria (2 minuti) per evitare chiamate ripetute
+// Cache in memoria (2 minuti) per evitare chiamate ripetute a Yahoo Finance
 const cache = {};
 const CACHE_DURATION_MS = 2 * 60 * 1000;
 
@@ -15,6 +15,7 @@ async function getSingleStockData(symbol) {
   const sym = symbol.trim().toUpperCase();
   const now = Date.now();
 
+  // Controllo Cache
   if (cache[sym] && (now - cache[sym].timestamp < CACHE_DURATION_MS)) {
     return cache[sym].data;
   }
@@ -32,9 +33,13 @@ async function getSingleStockData(symbol) {
   const meta = response.data?.chart?.result?.[0]?.meta;
   if (!meta) throw new Error(`Dati non trovati per ${sym}`);
 
+  // 1. Prezzo Attuale (diamo priorità al prezzo di mercato regolare)
   const currentPrice = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
-  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? currentPrice;
+
+  // 2. Chiusura di Ieri CORRETTA (priorità ai dati ufficiali di chiusura precedente)
+  const prevClose = meta.regularMarketPreviousClose ?? meta.previousClose ?? meta.chartPreviousClose ?? currentPrice;
   
+  // 3. Calcolo Variazione Percentualizzata
   let changePercent = 0;
   if (prevClose > 0) {
     changePercent = ((currentPrice - prevClose) / prevClose) * 100;
@@ -47,6 +52,7 @@ async function getSingleStockData(symbol) {
     currency: meta.currency || 'EUR'
   };
 
+  // Salva in Cache
   cache[sym] = { data: itemData, timestamp: now };
   return itemData;
 }
