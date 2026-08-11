@@ -1,98 +1,119 @@
 const express = require('express');
-const cors = require('cors');
 const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// Cache in memoria (chiave: ticker, valore: { data, timestamp })
+const cache = new Map();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minuti di cache
 
-// Cache in memoria (2 minuti) per evitare chiamate ripetute a Yahoo Finance
-const cache = {};
-const CACHE_DURATION_MS = 2 * 60 * 1000;
-
-async function getSingleStockData(symbol) {
-  const sym = symbol.trim().toUpperCase();
-  const now = Date.now();
-
-  // Controllo Cache
-  if (cache[sym] && (now - cache[sym].timestamp < CACHE_DURATION_MS)) {
-    return cache[sym].data;
-  }
-
-  // Endpoint Chart v8: stabile, veloce e privo di blocchi crumb/cookie
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=2d`;
-  
-  const response = await axios.get(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    },
-    timeout: 8000
-  });
-
-  const meta = response.data?.chart?.result?.[0]?.meta;
-  if (!meta) throw new Error(`Dati non trovati per ${sym}`);
-
-  // 1. Prezzo Attuale (diamo priorità al prezzo di mercato regolare)
-  const currentPrice = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
-
-  // 2. Chiusura di Ieri CORRETTA (priorità ai dati ufficiali di chiusura precedente)
-  const prevClose = meta.regularMarketPreviousClose ?? meta.previousClose ?? meta.chartPreviousClose ?? currentPrice;
-  
-  // 3. Calcolo Variazione Percentualizzata
-  let changePercent = 0;
-  if (prevClose > 0) {
-    changePercent = ((currentPrice - prevClose) / prevClose) * 100;
-  }
-
-  const itemData = {
-    symbol: sym,
-    price: currentPrice,
-    changePercent: parseFloat(changePercent.toFixed(2)),
-    currency: meta.currency || 'EUR'
-  };
-
-  // Salva in Cache
-  cache[sym] = { data: itemData, timestamp: now };
-  return itemData;
-}
-
-app.get('/price', async (req, res) => {
-  const rawSymbols = req.query.symbols || req.query.symbol;
-
-  if (!rawSymbols) {
-    return res.status(400).json({ error: 'Parametro symbol o symbols mancante.' });
-  }
-
-  const symbolList = Array.from(
-    new Set(rawSymbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean))
-  );
-
-  try {
-    const promises = symbolList.map(sym => 
-      getSingleStockData(sym).catch(err => {
-        console.error(`Errore per ${sym}:`, err.message);
-        return null;
-      })
-    );
-
-    const resultsArray = await Promise.all(promises);
-    const validResults = resultsArray.filter(Boolean);
-
-    if (req.query.symbol && symbolList.length === 1) {
-      if (validResults.length === 0) {
-        return res.status(404).json({ error: 'Simbolo non trovato.' });
-      }
-      return res.json(validResults[0]);
+// Middleware CORS per consentire le chiamate dalla tua PWA / Web App
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+    
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
     }
-
-    return res.json({
-      count: validResults.length,
-      results: validResults
-    });
-  } catch (error) {
-    return res.status(500).json({ error: 'Errore durante il recupero dei dati.' });
-  }
+    next();
 });
 
-app.listen(PORT, () => console.log(`Proxy attivo sulla porta ${PORT}`));
+// Helper per recuperare i dati del singolo ticker da Yahoo Finance (v8 chart)
+async function fetchYahooQuote(symbol) {
+    const cleanSymbol = symbol.trim().toUpperCase();
+    const now = Date.now();
+
+    // 1. Controllo Cache
+    if (cache.has(cleanSymbol)) {
+        const cachedItem = cache.get(cleanSymbol);
+        if (now - cachedItem.timestamp < CACHE_TTL_MS) {
+            return cachedItem.data;
+        }
+    }
+
+    // 2. Chiamata a Yahoo Finance Chart v8 API
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanSymbol)}?interval=1d&range=1d`;
+    
+    const response = await axios.get(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json'
+        },
+        timeout: 8000
+    });
+
+    const meta = response.data?.chart?.result?.[0]?.meta;
+    if (!meta) {
+        throw new Error(`Dati non trovati per il simbolo: ${cleanSymbol}`);
+    }
+
+    const price = meta.regularMarketPrice;
+    
+    // Riferimento di chiusura ufficiale per calcoli accurati
+    const prevClose = meta.regularMarketPreviousClose || meta.previousClose;
+    
+    // Priorità al dato di variazione percentuale nativo fornito da Yahoo
+    let changePercent = meta.regularMarketChangePercent;
+
+    if (changePercent === undefined || changePercent === null) {
+        if (price && prevClose) {
+            changePercent = ((price - prevClose) / prevClose) * 100;
+        } else {
+            changePercent = 0;
+        }
+    }
+
+    const result = {
+        symbol: meta.symbol || cleanSymbol,
+        price: Number(price) || 0,
+        changePercent: Number(Number(changePercent).toFixed(2)),
+        currency: meta.currency || 'EUR'
+    };
+
+    // Salvataggio in cache
+    cache.set(cleanSymbol, { data: result, timestamp: now });
+
+    return result;
+}
+
+// Endpoint principale del Proxy
+app.get('/api/quote', async (req, res) => {
+    // Supporta sia ?symbols=SWDA.MI,VWCE.MI sia ?symbol=SWDA.MI
+    const rawSymbols = req.query.symbols || req.query.symbol;
+
+    if (!rawSymbols) {
+        return res.status(400).json({ error: "Parametro 'symbols' o 'symbol' mancante nella richiesta." });
+    }
+
+    const symbolsArray = rawSymbols.split(',').filter(s => s.trim().length > 0);
+
+    try {
+        const promises = symbolsArray.map(symbol => 
+            fetchYahooQuote(symbol).catch(err => {
+                console.error(`Errore nel recupero di ${symbol}:`, err.message);
+                return null;
+            })
+        );
+
+        const results = (await Promise.all(promises)).filter(item => item !== null);
+
+        res.json({
+            count: results.length,
+            results: results
+        });
+    } catch (error) {
+        console.error("Errore generale del Proxy:", error.message);
+        res.status(500).json({ error: "Errore interno del server durante il recupero dei dati." });
+    }
+});
+
+// Health-check route per Render
+app.get('/', (req, res) => {
+    res.send('Yahoo Finance Proxy Server is running.');
+});
+
+app.listen(PORT, () => {
+    console.log(`Proxy server avviato sulla porta ${PORT}`);
+});
