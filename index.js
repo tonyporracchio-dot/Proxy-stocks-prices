@@ -1,6 +1,15 @@
 const express = require('express');
 const YahooFinance = require('yahoo-finance2').default;
-const yahooFinance = new YahooFinance();
+
+// Inizializzazione v3 con intestazioni personalizzate per evitare il blocco bot
+const yahooFinance = new YahooFinance({
+  fetchOptions: {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+  }
+});
+
 const cors = require('cors');
 
 const app = express();
@@ -36,5 +45,5 @@ app.get('/price', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server proxy attivo sulla porta 10000`);
+  console.log(`Server proxy attivo sulla porta ${port}`);
 });
