@@ -1,5 +1,6 @@
 const express = require('express');
-const yahooFinance = require('yahoo-finance2').default;
+const YahooFinance = require('yahoo-finance2').default;
+const yahooFinance = new YahooFinance();
 const cors = require('cors');
 
 const app = express();
@@ -35,5 +36,5 @@ app.get('/price', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server proxy attivo sulla porta ${port}`);
+  console.log(`Server proxy attivo sulla porta 10000`);
 });
