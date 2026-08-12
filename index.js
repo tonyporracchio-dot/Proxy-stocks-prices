@@ -1,17 +1,15 @@
 const express = require('express');
-const yahooFinance = require('yahoo-finance2').default;
+const yahooFinance = require('yahoo-finance2');
 const cors = require('cors');
 const path = require('path');
 
 const app = express();
 const port = process.env.PORT || 10000;
 
-// Abilita CORS per permettere alla tua app di chiamare questo proxy
+// Abilita CORS
 app.use(cors());
 
-// --- LA CORREZIONE CHE TI SERVIVA ---
-// Questo comando dice a Express di cercare file nella cartella 'public'
-// Quando visiti la root (/), Express caricherà automaticamente 'public/index.html'
+// Serve i file statici dalla cartella 'public' (Home page e istruzioni)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Rotta per i prezzi
@@ -26,7 +24,6 @@ app.get('/price', async (req, res) => {
   const results = [];
 
   try {
-    // Ciclo per recuperare ogni simbolo
     for (const symbol of symbols) {
       try {
         const quote = await yahooFinance.quote(symbol.trim());
@@ -38,11 +35,9 @@ app.get('/price', async (req, res) => {
         });
       } catch (err) {
         console.error(`Errore nel recupero del simbolo ${symbol}:`, err.message);
-        // Non blocchiamo tutto se un solo ticker fallisce
       }
     }
     
-    // Invio della risposta JSON
     res.json({ results });
     
   } catch (error) {
